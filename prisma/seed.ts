@@ -46,6 +46,12 @@ function toMoneyDecimal(value: number): Prisma.Decimal {
   return new Prisma.Decimal(value.toFixed(2));
 }
 
+function decimalToNumber(value: Prisma.Decimal): number {
+  return typeof (value as any).toNumber === "function"
+    ? (value as any).toNumber()
+    : Number(value.toString());
+}
+
 function skuSafe(input: string): string {
   return input
     .toUpperCase()
@@ -98,35 +104,387 @@ async function resetDatabase(prisma: PrismaClient): Promise<void> {
   console.log("✅ Database reset complete.");
 }
 
+async function seedAuctions(params: {
+  prisma: PrismaClient;
+  now: Date;
+  sellerUserIds: number[];
+  buyerUserIds: number[];
+  variants: Array<{
+    id: number;
+    price: Prisma.Decimal;
+    productId: number;
+  }>;
+}): Promise<void> {
+  const { prisma, now, sellerUserIds, buyerUserIds, variants } = params;
+  console.log("🏷️ Seeding auctions + bids...");
+
+  const auctionCount = 8;
+  if (variants.length < auctionCount) {
+    throw new Error(
+      `Not enough variants to seed auctions (needed ${auctionCount}, got ${variants.length})`
+    );
+  }
+
+  const statuses: Prisma.AuctionStatus[] = [
+    "ACTIVE",
+    "ACTIVE",
+    "ACTIVE",
+    "ACTIVE",
+    "ACTIVE",
+    "ENDED",
+    "ENDED",
+    "PAYMENT_FAILED",
+  ];
+
+  const auctions: Array<{
+    id: number;
+    status: Prisma.AuctionStatus;
+    startPrice: Prisma.Decimal;
+    buyOutPrice: Prisma.Decimal;
+    startTime: Date;
+    endTime: Date | null;
+    paymentDeadline: Date | null;
+    winnerId: number | null;
+  }> = [];
+
+  for (let i = 0; i < auctionCount; i++) {
+    const variant = variants[i];
+    const status = statuses[i];
+    const variantPrice = decimalToNumber(variant.price);
+
+    const startPrice = toMoneyDecimal(variantPrice * seededRandomFloat(0.6, 0.85));
+    const buyOutPrice = toMoneyDecimal(
+      Math.max(decimalToNumber(startPrice) + 1, variantPrice * seededRandomFloat(1.3, 1.8))
+    );
+
+    const sellerId = sellerUserIds[i % sellerUserIds.length];
+
+    let startTime: Date;
+    let endTime: Date | null = null;
+    let paymentDeadline: Date | null = null;
+    let winnerId: number | null = null;
+
+    if (status === "ACTIVE") {
+      startTime = new Date(now.getTime() - seededRandomInt(1, 6) * 60 * 60 * 1000);
+      endTime = new Date(now.getTime() + seededRandomInt(2, 48) * 60 * 60 * 1000);
+    } else if (status === "ENDED") {
+      startTime = new Date(now.getTime() - seededRandomInt(5, 9) * 24 * 60 * 60 * 1000);
+      endTime = new Date(now.getTime() - seededRandomInt(1, 24) * 60 * 60 * 1000);
+      winnerId = buyerUserIds[i % buyerUserIds.length];
+      paymentDeadline = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+    } else {
+      // PAYMENT_FAILED
+      startTime = new Date(now.getTime() - seededRandomInt(2, 4) * 24 * 60 * 60 * 1000);
+      endTime = new Date(now.getTime() - seededRandomInt(2, 12) * 60 * 60 * 1000);
+      winnerId = buyerUserIds[(i + 1) % buyerUserIds.length];
+      paymentDeadline = new Date(now.getTime() - 1 * 60 * 60 * 1000);
+    }
+
+    const created = await prisma.auction.create({
+      data: {
+        productId: variant.productId,
+        variantId: variant.id,
+        quantity: 1,
+        startPrice,
+        buyOutPrice,
+        currentBid: startPrice,
+        minIncrement: toMoneyDecimal(1),
+        startTime,
+        endTime,
+        paymentDeadline,
+        status,
+        winnerId,
+        failureReason: status === "PAYMENT_FAILED" ? "Payment deadline missed" : null,
+        createdBy: sellerId,
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    auctions.push({
+      id: created.id,
+      status,
+      startPrice,
+      buyOutPrice,
+      startTime,
+      endTime,
+      paymentDeadline,
+      winnerId,
+    });
+  }
+
+  // Seed bids (~20 total): small dataset, deterministic, valid ordering.
+  let totalBids = 0;
+  for (const auction of auctions) {
+    const bidsForAuction =
+      auction.status === "ACTIVE"
+        ? seededRandomInt(2, 4)
+        : seededRandomInt(2, 3);
+
+    const start = decimalToNumber(auction.startPrice);
+    const maxBid = decimalToNumber(auction.buyOutPrice) * 0.95;
+    const step = seededRandomFloat(0.5, 3.0);
+
+    const bidTimes: Date[] = [];
+    const createdBidAmounts: Prisma.Decimal[] = [];
+    let lastAmount = start;
+
+    for (let i = 0; i < bidsForAuction; i++) {
+      const bidderId =
+        auction.winnerId && i === bidsForAuction - 1
+          ? auction.winnerId
+          : buyerUserIds[(totalBids + i) % buyerUserIds.length];
+
+      let amountNumber = lastAmount + step;
+      if (amountNumber > maxBid) amountNumber = maxBid;
+      if (amountNumber <= lastAmount && maxBid > lastAmount) {
+        amountNumber = Math.min(maxBid, lastAmount + 0.01);
+      }
+      lastAmount = amountNumber;
+      const bidAmount = toMoneyDecimal(amountNumber);
+
+      const bidTimeBase =
+        auction.endTime && auction.endTime.getTime() < now.getTime()
+          ? auction.endTime.getTime() - (bidsForAuction - i) * 10 * 60 * 1000
+          : now.getTime() - (bidsForAuction - i) * 10 * 60 * 1000;
+
+      const bidTime = new Date(bidTimeBase);
+
+      await prisma.bid.create({
+        data: {
+          auctionId: auction.id,
+          userId: bidderId,
+          bidAmount,
+          bidTime,
+        },
+      });
+
+      bidTimes.push(bidTime);
+      createdBidAmounts.push(bidAmount);
+    }
+
+    totalBids += bidsForAuction;
+
+    const lastBidTime = bidTimes[bidTimes.length - 1] ?? null;
+    const currentBid =
+      createdBidAmounts[createdBidAmounts.length - 1] ?? auction.startPrice;
+
+    await prisma.auction.update({
+      where: { id: auction.id },
+      data: {
+        currentBid,
+        lastBidTime,
+      },
+    });
+
+    if (auction.status === "PAYMENT_FAILED" && auction.winnerId) {
+      await prisma.auctionFailure.create({
+        data: {
+          auctionId: auction.id,
+          winnerId: auction.winnerId,
+          winningBid: currentBid,
+          paymentDeadline:
+            auction.paymentDeadline ?? new Date(now.getTime() - 60 * 60 * 1000),
+          reason: "Payment deadline missed",
+          failedAt: new Date(now.getTime() - 30 * 60 * 1000),
+        },
+      });
+    }
+  }
+
+  console.log(`✅ Auctions seeded: ${auctions.length} | Bids seeded: ~${totalBids}`);
+}
+
+async function seedBlog(params: {
+  prisma: PrismaClient;
+  now: Date;
+  adminUserId: number;
+  commenterUserIds: number[];
+}): Promise<void> {
+  const { prisma, now, adminUserId, commenterUserIds } = params;
+  console.log("📝 Seeding blog posts + comments...");
+
+  const post1 = await prisma.blogPost.create({
+    data: {
+      title: "How to Spot Value in Modern TCG Singles",
+      slug: generateSlug("How to Spot Value in Modern TCG Singles"),
+      excerpt:
+        "A practical checklist for identifying undervalued singles using supply, playability, and print context.",
+      content:
+        "Tracking price trends is useful, but it’s not everything. Look at playability, reprint risk, and real supply in the market. In this post we break down a repeatable way to evaluate singles—whether you collect or flip.",
+      coverImage: null,
+      authorId: adminUserId,
+      category: "Market",
+      tags: ["tcg", "market", "singles"],
+      published: true,
+      publishedAt: new Date(now.getTime() - 5 * 24 * 60 * 60 * 1000),
+      viewCount: seededRandomInt(120, 900),
+    },
+  });
+
+  const post2 = await prisma.blogPost.create({
+    data: {
+      title: "Sleeves, Toploaders, and Binders: A Storage Guide",
+      slug: generateSlug("Sleeves, Toploaders, and Binders: A Storage Guide"),
+      excerpt:
+        "Protect your collection with the right storage setup—without overspending.",
+      content:
+        "Storage is part protection and part organization. We cover sleeve fits, when to use top loaders, and how to choose binders for trade binders vs long-term collection storage.",
+      coverImage: null,
+      authorId: adminUserId,
+      category: "Collecting",
+      tags: ["tcg", "storage", "accessories"],
+      published: true,
+      publishedAt: new Date(now.getTime() - 2 * 24 * 60 * 60 * 1000),
+      viewCount: seededRandomInt(80, 600),
+    },
+  });
+
+  await prisma.blogPost.create({
+    data: {
+      title: "Weekly Picks: Cards We’re Watching (Draft)",
+      slug: generateSlug("Weekly Picks: Cards We’re Watching Draft"),
+      excerpt: "Draft notes for upcoming weekly picks.",
+      content:
+        "Draft: This post is not published yet. It will include 5–10 singles with quick notes about price movement and play trends.",
+      coverImage: null,
+      authorId: adminUserId,
+      category: "Weekly",
+      tags: ["tcg", "weekly", "draft"],
+      published: false,
+      publishedAt: null,
+      viewCount: 0,
+    },
+  });
+
+  // ~10 comments across the 2 published posts: 6 top-level + 4 replies.
+  const topLevelComments: Array<{ id: number; postId: number }> = [];
+  const publishedPosts = [post1, post2];
+
+  for (let i = 0; i < 6; i++) {
+    const post = publishedPosts[i % publishedPosts.length];
+    const authorId = commenterUserIds[i % commenterUserIds.length];
+    const created = await prisma.blogComment.create({
+      data: {
+        postId: post.id,
+        userId: authorId,
+        content:
+          i % 2 === 0
+            ? "Solid breakdown—especially the part about balancing playability with reprint risk."
+            : "This is helpful. Any recommendations for budget-friendly binders that still feel premium?",
+        isEdited: i === 3,
+      },
+      select: { id: true, postId: true },
+    });
+    topLevelComments.push(created);
+  }
+
+  for (let i = 0; i < 4; i++) {
+    const parent = topLevelComments[i % topLevelComments.length];
+    const authorId = commenterUserIds[(i + 2) % commenterUserIds.length];
+    await prisma.blogComment.create({
+      data: {
+        postId: parent.postId,
+        userId: authorId,
+        parentId: parent.id,
+        content:
+          "Agree. Also worth noting that humidity control matters more than people think—especially for foils.",
+        isEdited: false,
+      },
+    });
+  }
+
+  const [post1Comments, post2Comments] = await prisma.$transaction([
+    prisma.blogComment.count({ where: { postId: post1.id } }),
+    prisma.blogComment.count({ where: { postId: post2.id } }),
+  ]);
+
+  await prisma.$transaction([
+    prisma.blogPost.update({
+      where: { id: post1.id },
+      data: { commentCount: post1Comments },
+    }),
+    prisma.blogPost.update({
+      where: { id: post2.id },
+      data: { commentCount: post2Comments },
+    }),
+  ]);
+
+  console.log(
+    `✅ Blog seeded: posts=3 | comments=${post1Comments + post2Comments}`
+  );
+}
+
 async function seedCoreCatalog(prisma: PrismaClient): Promise<void> {
   console.log("🌱 Seeding core TCG catalog (medium dataset)...");
 
   const passwordService = new PasswordService();
   const seedPasswordPlain = "Password123!";
-  const [adminPasswordHash, userPasswordHash] = await Promise.all([
-    passwordService.hashPassword(seedPasswordPlain),
-    passwordService.hashPassword(seedPasswordPlain),
-  ]);
+  const seededEmails = [
+    "admin@tcg.local",
+    "user@tcg.local",
+    "buyer1@tcg.local",
+    "buyer2@tcg.local",
+    "seller1@tcg.local",
+    "seller2@tcg.local",
+  ] as const;
 
-  await prisma.user.createMany({
-    data: [
-      {
-        name: "Admin Demo",
-        email: "admin@tcg.local",
-        password: adminPasswordHash,
-        role: "ADMIN",
+  const seededUsersData = await Promise.all(
+    seededEmails.map(async (email) => {
+      const isAdmin = email === "admin@tcg.local";
+      const isBuyer1 = email === "buyer1@tcg.local";
+      const isBuyer2 = email === "buyer2@tcg.local";
+      const isSeller1 = email === "seller1@tcg.local";
+      const isSeller2 = email === "seller2@tcg.local";
+
+      const name = isAdmin
+        ? "Admin Demo"
+        : email === "user@tcg.local"
+          ? "User Demo"
+          : isBuyer1
+            ? "Buyer One"
+            : isBuyer2
+              ? "Buyer Two"
+              : isSeller1
+                ? "Seller One"
+                : isSeller2
+                  ? "Seller Two"
+                  : "Demo User";
+
+      const role: Prisma.Role = isAdmin ? "ADMIN" : "USER";
+      const password = await passwordService.hashPassword(seedPasswordPlain);
+      return {
+        name,
+        email,
+        password,
+        role,
         isVerified: true,
         isActive: true,
-      },
-      {
-        name: "User Demo",
-        email: "user@tcg.local",
-        password: userPasswordHash,
-        role: "USER",
-        isVerified: true,
-        isActive: true,
-      },
-    ],
+      };
+    })
+  );
+
+  await prisma.user.createMany({ data: seededUsersData });
+
+  const seededUsers = await prisma.user.findMany({
+    where: { email: { in: [...seededEmails] } },
+    select: { id: true, email: true, role: true },
+    orderBy: { id: "asc" },
+  });
+
+  const adminUser = seededUsers.find((u) => u.email === "admin@tcg.local");
+  if (!adminUser) throw new Error("Seed admin user not found after creation");
+
+  const buyerUserIds = seededUsers
+    .filter((u) => u.email.startsWith("buyer") || u.email === "user@tcg.local")
+    .map((u) => u.id);
+  const sellerUserIds = seededUsers
+    .filter((u) => u.email.startsWith("seller"))
+    .map((u) => u.id);
+
+  await prisma.userAuctionStats.createMany({
+    data: buyerUserIds.map((userId) => ({ userId })),
   });
 
   const languages = {
@@ -848,6 +1206,38 @@ async function seedCoreCatalog(prisma: PrismaClient): Promise<void> {
     });
   }
 
+  const now = new Date();
+
+  const auctionVariants = await prisma.productVariant.findMany({
+    where: {
+      isActive: true,
+      conditionId: conditions.NM.id,
+      product: { productType: "SINGLE_CARD", isActive: true },
+    },
+    select: {
+      id: true,
+      price: true,
+      productId: true,
+    },
+    orderBy: { id: "asc" },
+    take: 8,
+  });
+
+  await seedAuctions({
+    prisma,
+    now,
+    sellerUserIds,
+    buyerUserIds,
+    variants: auctionVariants,
+  });
+
+  await seedBlog({
+    prisma,
+    now,
+    adminUserId: adminUser.id,
+    commenterUserIds: buyerUserIds.concat(sellerUserIds),
+  });
+
   console.log("✅ Core catalog seeded.");
   console.log(
     `ℹ️ Languages: ${Object.keys(languages).length} | Games: ${Object.keys(games).length} | Sets: ${createdSets.length}`
@@ -857,6 +1247,10 @@ async function seedCoreCatalog(prisma: PrismaClient): Promise<void> {
   console.log("=".repeat(50));
   console.log(`ADMIN  email: admin@tcg.local  password: ${seedPasswordPlain}`);
   console.log(`USER   email: user@tcg.local   password: ${seedPasswordPlain}`);
+  console.log(`BUYER1  email: buyer1@tcg.local  password: ${seedPasswordPlain}`);
+  console.log(`BUYER2  email: buyer2@tcg.local  password: ${seedPasswordPlain}`);
+  console.log(`SELLER1 email: seller1@tcg.local password: ${seedPasswordPlain}`);
+  console.log(`SELLER2 email: seller2@tcg.local password: ${seedPasswordPlain}`);
 }
 
 async function main() {
@@ -865,23 +1259,43 @@ async function main() {
     await resetDatabase(prisma);
     await seedCoreCatalog(prisma);
 
-    const [gameCount, setCount, productCount, variantCount, imageCount] =
-      await prisma.$transaction([
-        prisma.game.count(),
-        prisma.set.count(),
-        prisma.product.count(),
-        prisma.productVariant.count(),
-        prisma.productImage.count(),
-      ]);
+    const [
+      userCount,
+      gameCount,
+      setCount,
+      productCount,
+      variantCount,
+      imageCount,
+      auctionCount,
+      bidCount,
+      blogPostCount,
+      blogCommentCount,
+    ] = await prisma.$transaction([
+      prisma.user.count(),
+      prisma.game.count(),
+      prisma.set.count(),
+      prisma.product.count(),
+      prisma.productVariant.count(),
+      prisma.productImage.count(),
+      prisma.auction.count(),
+      prisma.bid.count(),
+      prisma.blogPost.count(),
+      prisma.blogComment.count(),
+    ]);
 
     console.log("=".repeat(50));
     console.log("📊 SEED SUMMARY");
     console.log("=".repeat(50));
+    console.log(`Users: ${userCount}`);
     console.log(`Games: ${gameCount}`);
     console.log(`Sets: ${setCount}`);
     console.log(`Products: ${productCount}`);
     console.log(`Variants: ${variantCount}`);
     console.log(`Images: ${imageCount}`);
+    console.log(`Auctions: ${auctionCount}`);
+    console.log(`Bids: ${bidCount}`);
+    console.log(`Blog posts: ${blogPostCount}`);
+    console.log(`Blog comments: ${blogCommentCount}`);
     console.log("✅ Done.");
   } catch (err) {
     console.error("❌ Seed failed:", err);
