@@ -4,6 +4,7 @@ import { AuctionService } from "../auction/auction.service";
 import { AuctionStatsService } from "../auction-stats/auction-stats.service";
 import { EmailService } from "../mail/email.service";
 import { OrderService } from "../../features/order/order.service";
+import { XenditInvoiceService } from "../../services/xendit-invoice.service";
 
 export class CronService {
   prisma: PrismaService;
@@ -11,6 +12,7 @@ export class CronService {
   auctionService: AuctionService;
   auctionStatsService: AuctionStatsService;
   emailService: EmailService;
+  xenditInvoice: XenditInvoiceService;
 
   constructor() {
     this.prisma = new PrismaService();
@@ -18,6 +20,7 @@ export class CronService {
     this.auctionService = new AuctionService();
     this.auctionStatsService = new AuctionStatsService();
     this.emailService = new EmailService();
+    this.xenditInvoice = new XenditInvoiceService();
   }
 
   /**
@@ -70,12 +73,178 @@ export class CronService {
       }
     });
 
+    // Xendit invoice reconciliation (Every 5 minutes)
+    cron.schedule("*/5 * * * *", async () => {
+      console.log("\n🕐 [CRON] Reconciling Xendit invoices...");
+      try {
+        const result = await this.reconcileXenditInvoices();
+        console.log(`✅ [CRON] Xendit invoice reconciliation: ${result.message}`);
+      } catch (error) {
+        console.error("❌ [CRON] Xendit invoice reconciliation failed:", error);
+      }
+    });
+
     console.log("✅ Cron jobs started successfully");
     console.log("📅 Schedule:");
     console.log("   - Auto-complete orders: Daily at 2:00 AM");
     console.log("   - Auto-end auctions: Every 5 minutes");
     console.log("   - Detect payment failures: Every hour");
     console.log("   - Auto-cancel unpaid auction orders: Every 10 minutes");
+    console.log("   - Reconcile Xendit invoices: Every 5 minutes");
+  };
+
+  private cancelAndRestoreOrder = async (
+    orderId: number,
+    reason: string,
+    paymentStatus: "EXPIRED" | "FAILED" = "EXPIRED"
+  ) => {
+    const now = new Date();
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      include: {
+        user: { select: { id: true, name: true, email: true } },
+        orderItems: true,
+        auctions: { include: { variant: true } },
+      },
+    });
+    if (!order) return;
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.order.update({
+        where: { id: order.id },
+        data: {
+          status: "CANCELLED",
+          paymentStatus,
+          cancellationReason: reason,
+          cancelledAt: now,
+        },
+      });
+
+      await tx.orderStatusHistory.create({
+        data: {
+          orderId: order.id,
+          status: "CANCELLED",
+          notes: `Auto-cancelled: ${reason}`,
+          createdBy: "system",
+        },
+      });
+
+      if (order.auctions && order.auctions.length > 0) {
+        for (const auction of order.auctions) {
+          await tx.auction.update({
+            where: { id: auction.id },
+            data: {
+              status: "PAYMENT_FAILED",
+              failureReason: "payment_expired",
+              orderId: null,
+            },
+          });
+
+          await tx.productVariant.update({
+            where: { id: auction.variantId },
+            data: { stock: { increment: auction.quantity } },
+          });
+
+          await tx.auctionFailure.create({
+            data: {
+              auctionId: auction.id,
+              winnerId: order.userId,
+              winningBid: auction.currentBid,
+              paymentDeadline: order.paymentDeadline || now,
+              reason: "payment_expired",
+            },
+          });
+        }
+      } else {
+        for (const item of order.orderItems) {
+          await tx.productVariant.update({
+            where: { id: item.variantId },
+            data: { stock: { increment: item.quantity } },
+          });
+        }
+      }
+    });
+  };
+
+  reconcileXenditInvoices = async () => {
+    const orders = await this.prisma.order.findMany({
+      where: {
+        paymentMethod: "XENDIT_INVOICE",
+        paymentStatus: "UNPAID",
+        status: { in: ["PENDING", "WAITING_FOR_CONFIRMATION"] },
+        xenditInvoiceId: { not: null },
+      },
+      include: {
+        user: { select: { id: true, name: true, email: true } },
+        orderItems: true,
+        auctions: { include: { variant: true } },
+      },
+      take: 50,
+      orderBy: { createdAt: "desc" },
+    });
+
+    let updated = 0;
+    for (const order of orders) {
+      try {
+        const invoice = await this.xenditInvoice.getInvoiceById(
+          (order as any).xenditInvoiceId
+        );
+        const status = String(invoice.status || "PENDING").toUpperCase();
+
+        if (status === "PAID" || status === "SETTLED") {
+          await this.prisma.$transaction(async (tx) => {
+            await tx.order.update({
+              where: { id: order.id },
+              data: {
+                paymentStatus: "PAID",
+                status: "CONFIRMED",
+                paidAt: invoice.paidAt ? new Date(invoice.paidAt) : new Date(),
+                confirmedAt: new Date(),
+                xenditInvoiceStatus: status,
+                xenditInvoiceUrl: invoice.invoiceUrl,
+              },
+            });
+            await tx.orderStatusHistory.create({
+              data: {
+                orderId: order.id,
+                status: "CONFIRMED",
+                notes: "Payment confirmed (Xendit reconciliation)",
+                createdBy: "system",
+              },
+            });
+          });
+          updated += 1;
+          continue;
+        }
+
+        if (status === "EXPIRED" || status === "FAILED") {
+          await this.cancelAndRestoreOrder(
+            order.id,
+            status === "FAILED"
+              ? "Payment failed (Xendit reconciliation)"
+              : "Payment expired (Xendit reconciliation)",
+            status === "FAILED" ? "FAILED" : "EXPIRED"
+          );
+          updated += 1;
+          continue;
+        }
+
+        await this.prisma.order.update({
+          where: { id: order.id },
+          data: {
+            xenditInvoiceStatus: status,
+            xenditInvoiceUrl: invoice.invoiceUrl,
+          },
+        });
+      } catch (error) {
+        console.error(
+          `❌ [CRON] Failed to reconcile invoice for order ${order.orderNumber}:`,
+          (error as any)?.message || error
+        );
+      }
+    }
+
+    return { message: `Updated ${updated} order(s)`, count: updated };
   };
 
   /**

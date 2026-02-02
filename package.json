@@ -7,6 +7,7 @@
     "start": "npm run build && node dist/index.js",
     "dev": "nodemon src/index.ts",
     "postinstall": "prisma generate",
+    "db:seed": "ts-node prisma/seed.ts",
     "script:update-weights": "ts-node scripts/update-product-weights.ts"
   },
   "keywords": [],
@@ -22,9 +23,6 @@
     "@types/node": "^24.10.1",
     "@types/node-cron": "^3.0.11",
     "@types/nodemailer": "^6.4.17",
-    "@types/passport": "^1.0.17",
-    "@types/passport-github2": "^1.2.9",
-    "@types/passport-google-oauth20": "^2.0.17",
     "nodemon": "^3.1.10",
     "prisma": "^6.18.0",
     "ts-node": "^10.9.2",
@@ -32,6 +30,7 @@
   },
   "dependencies": {
     "@prisma/client": "^6.18.0",
+    "@sentry/node": "^8.47.0",
     "axios": "^1.13.2",
     "bcrypt": "^6.0.0",
     "class-transformer": "^0.5.1",
@@ -44,11 +43,10 @@
     "handlebars": "^4.7.8",
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.2",
+    "nanoid": "^3.3.8",
     "node-cron": "^4.2.1",
     "nodemailer": "^7.0.5",
-    "passport": "^0.7.0",
-    "passport-github2": "^0.1.12",
-    "passport-google-oauth20": "^2.0.0",
-    "reflect-metadata": "^0.2.2"
+    "reflect-metadata": "^0.2.2",
+    "xendit-node": "^7.0.0"
   }
 }

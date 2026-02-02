@@ -1,4 +1,4 @@
-import { IsEmail, IsNotEmpty, IsString } from "class-validator";
+import { IsEmail, IsNotEmpty, IsOptional, IsString } from "class-validator";
 
 export class RegisterDTO {
     @IsString()
@@ -8,4 +8,8 @@ export class RegisterDTO {
     @IsEmail()
     @IsNotEmpty()
     email!: string;
+
+    @IsOptional()
+    @IsString()
+    turnstileToken?: string;
 }

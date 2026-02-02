@@ -1,5 +1,4 @@
 import { Router } from "express";
-import passport from "passport";
 import { AuthController } from "./auth.controller";
 import { validateBody } from "../../middlewares/validate.middleware";
 import { RegisterDTO } from "./dto/register.dto";
@@ -69,42 +68,6 @@ export class AuthRouter {
       "/resend-verification",
       validateBody(ResendVerificationDTO),
       this.authController.resendVerification
-    );
-
-    // OAuth Google routes
-    this.router.get(
-      "/google",
-      passport.authenticate("google", {
-        scope: ["profile", "email"],
-        prompt: "consent",
-        accessType: "offline",
-      })
-    );
-
-    this.router.get(
-      "/google/callback",
-      passport.authenticate("google", {
-        session: false,
-        failureRedirect: `${process.env.FRONTEND_URL}/login?error=oauth_failed`,
-      }),
-      this.authController.googleCallback
-    );
-
-    // OAuth GitHub routes
-    this.router.get(
-      "/github",
-      passport.authenticate("github", {
-        scope: ["user:email"],
-      })
-    );
-
-    this.router.get(
-      "/github/callback",
-      passport.authenticate("github", {
-        session: false,
-        failureRedirect: `${process.env.FRONTEND_URL}/login?error=oauth_failed`,
-      }),
-      this.authController.githubCallback
     );
 
     // Email update routes

@@ -19,9 +19,13 @@ export class BlogService {
   /**
    * Get all blog posts (published only for public)
    */
-  getAllPosts = async (isAdmin: boolean = false) => {
+  getAllPosts = async (
+    isAdmin: boolean = false,
+    filters?: { category?: string; tag?: string; search?: string }
+  ) => {
+    const where = this.buildPostWhere(isAdmin, filters);
     return await this.prisma.blogPost.findMany({
-      where: isAdmin ? {} : { published: true },
+      where,
       include: {
         author: {
           select: {
@@ -40,17 +44,24 @@ export class BlogService {
 
   getAllPostsPaginated = async (
     isAdmin: boolean = false,
-    pagination?: { page?: number; limit?: number; skip?: number }
+    params?: {
+      page?: number;
+      limit?: number;
+      skip?: number;
+      category?: string;
+      tag?: string;
+      search?: string;
+    }
   ) => {
-    const where = isAdmin ? {} : { published: true };
-    const limit = pagination?.limit ?? 20;
+    const where = this.buildPostWhere(isAdmin, params);
+    const limit = params?.limit ?? 20;
     const skip =
-      pagination?.page !== undefined ? (pagination.page - 1) * limit : 0;
+      params?.page !== undefined ? (params.page - 1) * limit : 0;
     const effectiveSkip =
-      pagination?.page !== undefined ? skip : (pagination?.skip ?? 0);
+      params?.page !== undefined ? skip : (params?.skip ?? 0);
     const page =
-      pagination?.page !== undefined
-        ? pagination.page
+      params?.page !== undefined
+        ? params.page
         : Math.floor(effectiveSkip / limit) + 1;
 
     const [posts, total] = await this.prisma.$transaction([
@@ -85,6 +96,33 @@ export class BlogService {
       },
     };
   };
+
+  private buildPostWhere(
+    isAdmin: boolean,
+    filters?: { category?: string; tag?: string; search?: string }
+  ) {
+    const whereParts: any[] = [];
+
+    if (!isAdmin) whereParts.push({ published: true });
+    if (filters?.category) whereParts.push({ category: filters.category });
+    if (filters?.tag) whereParts.push({ tags: { has: filters.tag } });
+
+    if (filters?.search) {
+      const q = filters.search;
+      whereParts.push({
+        OR: [
+          { title: { contains: q, mode: "insensitive" } },
+          { excerpt: { contains: q, mode: "insensitive" } },
+          { content: { contains: q, mode: "insensitive" } },
+          { category: { contains: q, mode: "insensitive" } },
+        ],
+      });
+    }
+
+    if (whereParts.length === 0) return {};
+    if (whereParts.length === 1) return whereParts[0];
+    return { AND: whereParts };
+  }
 
   /**
    * Get single blog post by slug

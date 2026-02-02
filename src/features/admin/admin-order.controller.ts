@@ -64,76 +64,7 @@ export class AdminOrderController {
     }
   };
 
-  // ========================================
-  // GET WAITING CONFIRMATION ORDERS
-  // ========================================
-  getWaitingConfirmation = async (
-    req: Request,
-    res: Response,
-    next: NextFunction
-  ) => {
-    try {
-      console.log("⏳ Fetching orders waiting for confirmation");
 
-      const orders = await this.adminOrderService.getWaitingConfirmation();
-
-      res.status(200).json({
-        success: true,
-        data: orders,
-        count: orders.length,
-      });
-    } catch (error) {
-      next(error);
-    }
-  };
-
-  // ========================================
-  // CONFIRM PAYMENT
-  // ========================================
-  confirmPayment = async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const { orderNumber } = req.params;
-
-      console.log("✅ Confirming payment for order:", orderNumber);
-
-      const order = await this.adminOrderService.confirmPayment(
-        orderNumber,
-        req.body
-      );
-
-      res.status(200).json({
-        success: true,
-        message: "Payment confirmed successfully",
-        data: order,
-      });
-    } catch (error) {
-      next(error);
-    }
-  };
-
-  // ========================================
-  // REJECT PAYMENT
-  // ========================================
-  rejectPayment = async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const { orderNumber } = req.params;
-
-      console.log("❌ Rejecting payment for order:", orderNumber);
-
-      const order = await this.adminOrderService.rejectPayment(
-        orderNumber,
-        req.body
-      );
-
-      res.status(200).json({
-        success: true,
-        message: "Payment rejected successfully",
-        data: order,
-      });
-    } catch (error) {
-      next(error);
-    }
-  };
 
   // ========================================
   // PROCESS ORDER

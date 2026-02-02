@@ -1,3 +1,5 @@
+import fs from "node:fs";
+
 export const JWT_SECRET = process.env.JWT_SECRET!;
 export const PORT = process.env.PORT || 8000;
 
@@ -9,7 +11,24 @@ export const CLOUDINARY_CONFIG = {
 };
 
 // Biteship Configuration
-export const BITESHIP_API_KEY = process.env.BITESHIP_API_KEY || "your_biteship_api_key_here";
+const readSecretFile = (path: string) => {
+  try {
+    if (!path) return "";
+    if (!fs.existsSync(path)) return "";
+    return fs.readFileSync(path, "utf8").trim();
+  } catch {
+    return "";
+  }
+};
+
+const BITESHIP_API_KEY_FROM_FILE = readSecretFile(
+  process.env.BITESHIP_API_KEY_FILE || "/run/secrets/biteship_api_key"
+);
+
+export const BITESHIP_API_KEY =
+  process.env.BITESHIP_API_KEY ||
+  BITESHIP_API_KEY_FROM_FILE ||
+  "your_biteship_api_key_here";
 export const BITESHIP_BASE_URL = process.env.BITESHIP_BASE_URL || "https://api.biteship.com";
 
 // Origin Location

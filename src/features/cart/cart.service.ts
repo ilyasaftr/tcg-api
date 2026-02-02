@@ -1,14 +1,17 @@
 import { PrismaService } from "../../modules/prisma/prisma.service";
-import { RajaOngkirService } from "../../modules/rajaongkir/rajaongkir.service";
 import { ApiError } from "../../utils/api-error";
+import { RajaOngkirService } from "../../modules/rajaongkir/rajaongkir.service";
+import { ShippingCalculatorService } from "../../services/shipping-calculator.service";
 
 export class CartService {
   private prisma: PrismaService;
   private rajaOngkirService: RajaOngkirService;
+  private shippingCalculator: ShippingCalculatorService;
 
   constructor() {
     this.prisma = new PrismaService();
     this.rajaOngkirService = new RajaOngkirService();
+    this.shippingCalculator = new ShippingCalculatorService();
   }
 
   // ===========================
@@ -329,15 +332,16 @@ export class CartService {
       throw new ApiError("Address not found", 404);
     }
 
-    // Get origin city from env (your store location)
-    const originCityId = parseInt(process.env.ORIGIN_CITY_ID || "17486");
-
-    // Calculate shipping cost using RajaOngkir
-    const shippingOptions = await this.rajaOngkirService.calculateCost({
-      originCityId: originCityId,
-      destinationCityId: address.cityId,
+    const shippingOptions = await this.shippingCalculator.calculateShippingOptions({
+      address: {
+        postalCode: address.postalCode,
+        cityName: address.cityName,
+        provinceName: address.provinceName,
+        districtName: (address as any).districtName,
+        subdistrictName: (address as any).subdistrictName,
+      },
       weight: cart.summary.totalWeight,
-      courier: courier,
+      courier,
     });
 
     // Get recommendations
@@ -363,6 +367,8 @@ export class CartService {
         phoneNumber: address.phoneNumber,
         cityId: address.cityId,
         cityName: address.cityName,
+        districtName: (address as any).districtName,
+        subdistrictName: (address as any).subdistrictName,
         provinceName: address.provinceName,
         street: address.street,
         postalCode: address.postalCode,

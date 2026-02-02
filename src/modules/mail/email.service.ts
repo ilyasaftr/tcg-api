@@ -38,33 +38,6 @@ export class EmailService {
   };
 
   /**
-   * Send payment uploaded notification to admin
-   */
-  sendPaymentUploadedToAdmin = async (orderData: any) => {
-    try {
-      await this.mailService.sendMail(
-        this.adminEmail,
-        `[ACTION REQUIRED] Payment Proof Uploaded - ${orderData.orderNumber}`,
-        "payment-uploaded-admin",
-        {
-          orderNumber: orderData.orderNumber,
-          customerName: orderData.customerName,
-          total: orderData.total.toLocaleString("id-ID"),
-          bankName: orderData.bankName,
-          accountNumber: orderData.accountNumber,
-          accountName: orderData.accountName,
-          paymentProof: orderData.paymentProof,
-          adminUrl: process.env.ADMIN_URL || "http://localhost:3000/admin",
-          year: new Date().getFullYear(),
-        }
-      );
-      console.log(`✅ Payment uploaded notification sent to admin`);
-    } catch (error) {
-      console.error("❌ Failed to send payment uploaded email:", error);
-    }
-  };
-
-  /**
    * Send payment confirmed email to customer
    */
   sendPaymentConfirmed = async (to: string, orderData: any) => {
@@ -413,9 +386,8 @@ export class EmailService {
           productName: data.productName,
           winnerName: data.winnerName,
           winningBid: data.winningBid.toLocaleString("id-ID"),
-          adminUrl: `${
-            process.env.ADMIN_URL || "http://localhost:3000/admin"
-          }/auctions/failed-payments`,
+          adminUrl: `${process.env.ADMIN_URL || "http://localhost:3000/admin"
+            }/auctions/failed-payments`,
           year: new Date().getFullYear(),
         }
       );

@@ -1,7 +1,5 @@
 import { Router } from "express";
 import { AdminOrderController } from "./admin-order.controller";
-import { ConfirmPaymentDTO } from "./dto/confirm-payment.dto";
-import { RejectPaymentDTO } from "./dto/reject-payment.dto";
 import { ShipOrderDTO } from "./dto/ship-order.dto";
 import { JwtMiddleware } from "../../middlewares/jwt.middleware";
 import { RoleMiddleware } from "../../middlewares/role.middleware";
@@ -55,37 +53,10 @@ export class AdminOrderRouter {
     );
     console.log("✅ Registered: GET /admin/orders/dashboard");
 
-    // 4. GET /admin/orders/waiting-confirmation (SPECIFIC)
-    this.router.get(
-      "/waiting-confirmation",
-      ...authChain,
-      this.adminOrderController.getWaitingConfirmation
-    );
-    console.log("✅ Registered: GET /admin/orders/waiting-confirmation");
-
-    // 5. GET /admin/orders (ROOT - List all)
+    // 4. GET /admin/orders (ROOT - List all)
     this.router.get("/", ...authChain, this.adminOrderController.getAll);
     console.log("✅ Registered: GET /admin/orders");
 
-    // 6. POST /admin/orders/:orderNumber/confirm-payment (SPECIFIC SUFFIX)
-    this.router.post(
-      "/:orderNumber/confirm-payment",
-      ...authChain,
-      validateBody(ConfirmPaymentDTO),
-      this.adminOrderController.confirmPayment
-    );
-    console.log(
-      "✅ Registered: POST /admin/orders/:orderNumber/confirm-payment"
-    );
-
-    // 7. POST /admin/orders/:orderNumber/reject-payment (SPECIFIC SUFFIX)
-    this.router.post(
-      "/:orderNumber/reject-payment",
-      ...authChain,
-      validateBody(RejectPaymentDTO),
-      this.adminOrderController.rejectPayment
-    );
-    console.log("✅ Registered: POST /admin/orders/:orderNumber/reject-payment");
 
     // 8. POST /admin/orders/:orderNumber/process (SPECIFIC SUFFIX)
     this.router.post(

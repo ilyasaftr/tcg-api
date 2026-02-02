@@ -31,6 +31,14 @@ export class CreateAddressDto {
 
   @IsNotEmpty()
   @IsString()
+  districtName!: string;
+
+  @IsNotEmpty()
+  @IsString()
+  subdistrictName!: string;
+
+  @IsNotEmpty()
+  @IsString()
   street!: string;
 
   @IsNotEmpty()

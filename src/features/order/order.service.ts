@@ -1,26 +1,42 @@
 import { ApiError } from "../../utils/api-error";
 import { generateOrderNumber } from "../../utils/order-number.util";
 import { CreateOrderDto } from "./dto/create-order.dto";
-import { UploadPaymentProofDto } from "./dto/upload-payment-proof.dto";
 import { CancelOrderDto } from "./dto/cancel-order.dto";
-import { uploadPaymentProof } from "../../utils/file-upload.util";
 import { PrismaService } from "../../modules/prisma/prisma.service";
 import { RajaOngkirService } from "../../modules/rajaongkir/rajaongkir.service";
 import { EmailService } from "../../modules/mail/email.service";
 import { PreviewAuctionCheckoutDto } from "../../modules/auction/dto/preview-auction-checkout.dto";
 import { CheckoutAuctionsDto } from "../../modules/auction/dto/checkout-auctions.dto";
+import { BisteshipService } from "../../services/biteship.service";
+import { ShippingCalculatorService } from "../../services/shipping-calculator.service";
+import { Prisma } from "../../generated/prisma";
+import { XenditInvoiceService } from "../../services/xendit-invoice.service";
 
 export class OrderService {
   prisma: PrismaService;
   packagingFee: number;
   rajaOngkirService: RajaOngkirService;
+  biteship: BisteshipService;
+  shippingCalculator: ShippingCalculatorService;
   emailService: EmailService;
+  xenditInvoice: XenditInvoiceService;
 
   constructor() {
     this.prisma = new PrismaService();
     this.packagingFee = parseInt(process.env.PACKAGING_FEE || "2500");
     this.rajaOngkirService = new RajaOngkirService();
+    this.biteship = new BisteshipService();
+    this.shippingCalculator = new ShippingCalculatorService();
     this.emailService = new EmailService();
+    this.xenditInvoice = new XenditInvoiceService();
+  }
+
+  private isOrderNumberCollision(error: unknown) {
+    if (!(error instanceof Prisma.PrismaClientKnownRequestError)) return false;
+    if (error.code !== "P2002") return false;
+    const target = (error.meta as { target?: unknown } | undefined)?.target;
+    if (Array.isArray(target)) return target.includes("orderNumber");
+    return target === "orderNumber";
   }
 
   /**
@@ -102,13 +118,15 @@ export class OrderService {
       return sum + weight * item.quantity;
     }, 0);
 
-    // Verify shipping cost with RajaOngkir
-    const originCityId = parseInt(process.env.ORIGIN_CITY_ID || "17486");
-
-    console.log("🔍 Verifying shipping cost with RajaOngkir...");
-    const shippingOptions = await this.rajaOngkirService.calculateCost({
-      originCityId: originCityId,
-      destinationCityId: address.cityId,
+    console.log("🔍 Verifying shipping cost (RajaOngkir → Biteship fallback)...");
+    const shippingOptions = await this.shippingCalculator.calculateShippingOptions({
+      address: {
+        postalCode: address.postalCode,
+        cityName: address.cityName,
+        provinceName: address.provinceName,
+        districtName: (address as any).districtName,
+        subdistrictName: (address as any).subdistrictName,
+      },
       weight: totalWeight,
       courier: data.courierCode,
     });
@@ -132,71 +150,114 @@ export class OrderService {
 
     const total = subtotal + data.shippingCost + this.packagingFee;
 
-    // 6. Generate order number
-    const orderNumber = await generateOrderNumber();
-
-    console.log("📦 Creating order:", orderNumber);
-
-    // 7. Create order with transaction
-    const order = await this.prisma.$transaction(async (tx) => {
-      const newOrder = await tx.order.create({
-        data: {
-          orderNumber,
-          userId,
-          addressId: data.addressId,
-          courier: data.courier,
-          courierCode: data.courierCode,
-          courierService: data.courierService,
-          courierServiceName: data.courierServiceName,
-          estimatedDelivery: data.estimatedDelivery || selectedShipping.etd,
-          weight: totalWeight,
-          paymentMethod: "BANK_TRANSFER",
-          paymentStatus: "UNPAID",
-          subtotal,
-          shippingCost: data.shippingCost,
-          packagingFee: this.packagingFee,
-          adminFee: 0,
-          discount: 0,
-          total,
-          status: "PENDING",
-          notes: data.notes,
-        },
-      });
-
-      for (const item of cart.cartItems) {
-        await tx.orderItem.create({
-          data: {
-            orderId: newOrder.id,
-            productId: item.productId,
-            variantId: item.variantId,
+    // 6. Create order with transaction (+ retry on unique orderNumber collision)
+    const order = await (async () => {
+      for (let attempt = 1; attempt <= 5; attempt++) {
+        const orderNumber = await generateOrderNumber();
+        const invoiceDurationSeconds = Number.parseInt(
+          process.env.XENDIT_INVOICE_DURATION_SECONDS || String(24 * 60 * 60),
+          10
+        );
+        const invoice = await this.xenditInvoice.createInvoice({
+          externalId: orderNumber,
+          amount: Number(total),
+          payerEmail: user.email,
+          description: `TCG Store order ${orderNumber}`,
+          invoiceDurationSeconds,
+          successRedirectUrl: `${process.env.FRONTEND_URL || ""}/orders/${orderNumber}`,
+          failureRedirectUrl: `${process.env.FRONTEND_URL || ""}/orders/${orderNumber}`,
+          items: cart.cartItems.map((item) => ({
+            name: item.product.name,
             quantity: item.quantity,
-            price: item.variant.price,
-            subtotal: Number(item.variant.price) * item.quantity,
-            sourceType: "REGULAR", // ✅ Regular order
-          },
+            price: Number(item.variant.price),
+            category: item.product.productType,
+            url: `${process.env.FRONTEND_URL || ""}/products/${item.product.slug}`,
+          })),
+          metadata: { orderNumber },
         });
+        const paymentDeadline = new Date(
+          Date.now() + invoiceDurationSeconds * 1000
+        );
 
-        await tx.productVariant.update({
-          where: { id: item.variantId },
-          data: { stock: { decrement: item.quantity } },
-        });
+        console.log("📦 Creating order:", orderNumber);
+
+        try {
+          return await this.prisma.$transaction(async (tx) => {
+            const newOrder = await tx.order.create({
+              data: {
+                orderNumber,
+                userId,
+                addressId: data.addressId,
+                courier: data.courier,
+                courierCode: data.courierCode,
+                courierService: data.courierService,
+                courierServiceName: data.courierServiceName,
+                estimatedDelivery: data.estimatedDelivery || selectedShipping.etd,
+                weight: totalWeight,
+                paymentMethod: "XENDIT_INVOICE",
+                paymentStatus: "UNPAID",
+                xenditInvoiceId: invoice.id,
+                xenditInvoiceUrl: invoice.invoiceUrl,
+                xenditInvoiceStatus: String(invoice.status || "PENDING"),
+                subtotal,
+                shippingCost: data.shippingCost,
+                packagingFee: this.packagingFee,
+                adminFee: 0,
+                discount: 0,
+                total,
+                status: "PENDING",
+                notes: data.notes,
+                paymentDeadline,
+              },
+            });
+
+            for (const item of cart.cartItems) {
+              await tx.orderItem.create({
+                data: {
+                  orderId: newOrder.id,
+                  productId: item.productId,
+                  variantId: item.variantId,
+                  quantity: item.quantity,
+                  price: item.variant.price,
+                  subtotal: Number(item.variant.price) * item.quantity,
+                  sourceType: "REGULAR", // ✅ Regular order
+                },
+              });
+
+              await tx.productVariant.update({
+                where: { id: item.variantId },
+                data: { stock: { decrement: item.quantity } },
+              });
+            }
+
+            await tx.orderStatusHistory.create({
+              data: {
+                orderId: newOrder.id,
+                status: "PENDING",
+                notes: "Order created",
+                createdBy: `user-${userId}`,
+              },
+            });
+
+            await tx.cartItem.deleteMany({
+              where: { cartId: cart.id },
+            });
+
+            return newOrder;
+          });
+        } catch (error) {
+          if (this.isOrderNumberCollision(error) && attempt < 5) {
+            console.warn(
+              `⚠️ Order number collision (attempt ${attempt}); retrying...`
+            );
+            continue;
+          }
+          throw error;
+        }
       }
 
-      await tx.orderStatusHistory.create({
-        data: {
-          orderId: newOrder.id,
-          status: "PENDING",
-          notes: "Order created",
-          createdBy: `user-${userId}`,
-        },
-      });
-
-      await tx.cartItem.deleteMany({
-        where: { cartId: cart.id },
-      });
-
-      return newOrder;
-    });
+      throw new ApiError("Failed to generate unique order number", 500);
+    })();
 
     console.log("✅ Order created successfully:", order.orderNumber);
 
@@ -311,13 +372,15 @@ export class OrderService {
 
     console.log(`   Payment deadline: ${earliestDeadline.toISOString()}`);
 
-    // 5. Calculate shipping cost with RajaOngkir
-    const originCityId = parseInt(process.env.ORIGIN_CITY_ID || "17486");
-
     console.log("🚚 Calculating shipping options...");
-    const shippingOptions = await this.rajaOngkirService.calculateCost({
-      originCityId: originCityId,
-      destinationCityId: address.cityId,
+    const shippingOptions = await this.shippingCalculator.calculateShippingOptions({
+      address: {
+        postalCode: address.postalCode,
+        cityName: address.cityName,
+        provinceName: address.provinceName,
+        districtName: (address as any).districtName,
+        subdistrictName: (address as any).subdistrictName,
+      },
       weight: totalWeight,
       courier: data.courier,
     });
@@ -446,13 +509,15 @@ export class OrderService {
       return sum + weight * auction.quantity;
     }, 0);
 
-    // 5. Verify shipping cost with RajaOngkir
-    const originCityId = parseInt(process.env.ORIGIN_CITY_ID || "17486");
-
-    console.log("🔍 Verifying shipping cost with RajaOngkir...");
-    const shippingOptions = await this.rajaOngkirService.calculateCost({
-      originCityId: originCityId,
-      destinationCityId: address.cityId,
+    console.log("🔍 Verifying shipping cost (RajaOngkir → Biteship fallback)...");
+    const shippingOptions = await this.shippingCalculator.calculateShippingOptions({
+      address: {
+        postalCode: address.postalCode,
+        cityName: address.cityName,
+        provinceName: address.provinceName,
+        districtName: (address as any).districtName,
+        subdistrictName: (address as any).subdistrictName,
+      },
       weight: totalWeight,
       courier: data.courierCode,
     });
@@ -488,78 +553,117 @@ export class OrderService {
       throw new ApiError("Payment deadline not set for auctions", 400);
     }
 
-    // 7. Generate order number
-    const orderNumber = await generateOrderNumber();
-
-    console.log("📦 Creating order from auctions:", orderNumber);
     console.log(`   Auctions: ${data.auctionIds.join(", ")}`);
     console.log(`   Total: Rp ${total.toLocaleString("id-ID")}`);
 
     // 8. Create order with transaction
-    const order = await this.prisma.$transaction(async (tx) => {
-      const newOrder = await tx.order.create({
-        data: {
-          orderNumber,
-          userId,
-          addressId: data.addressId,
-          courier: data.courier,
-          courierCode: data.courierCode,
-          courierService: data.courierService,
-          courierServiceName: data.courierServiceName,
-          estimatedDelivery: data.estimatedDelivery || selectedShipping.etd,
-          weight: totalWeight,
-          paymentMethod: "BANK_TRANSFER",
-          paymentStatus: "UNPAID",
-          subtotal,
-          shippingCost: data.shippingCost,
-          packagingFee: this.packagingFee,
-          adminFee: 0,
-          discount: 0,
-          total,
-          status: "PENDING",
-          notes: data.notes,
-          paymentDeadline: earliestDeadline, // ✅ NEW
-        },
-      });
-
-      // Create OrderItems (one per auction)
-      for (const auction of auctions) {
-        await tx.orderItem.create({
-          data: {
-            orderId: newOrder.id,
-            productId: auction.product.id,
-            variantId: auction.variant.id,
+    const order = await (async () => {
+      for (let attempt = 1; attempt <= 5; attempt++) {
+        const orderNumber = await generateOrderNumber();
+        const invoiceDurationSeconds = Math.max(
+          60,
+          Math.floor((earliestDeadline.getTime() - Date.now()) / 1000)
+        );
+        const invoice = await this.xenditInvoice.createInvoice({
+          externalId: orderNumber,
+          amount: Number(total),
+          payerEmail: user.email,
+          description: `TCG Store auction order ${orderNumber}`,
+          invoiceDurationSeconds,
+          successRedirectUrl: `${process.env.FRONTEND_URL || ""}/orders/${orderNumber}`,
+          failureRedirectUrl: `${process.env.FRONTEND_URL || ""}/orders/${orderNumber}`,
+          items: auctions.map((auction) => ({
+            name: auction.product.name,
             quantity: auction.quantity,
-            price: auction.currentBid,
-            subtotal: Number(auction.currentBid) * auction.quantity,
-            sourceType: "AUCTION", // ✅ NEW
-            sourceId: auction.id, // ✅ NEW
-          },
+            price: Number(auction.currentBid),
+            url: `${process.env.FRONTEND_URL || ""}/auctions/${auction.id}`,
+          })),
+          metadata: { orderNumber, auctionIds: data.auctionIds },
         });
+
+        console.log("📦 Creating order from auctions:", orderNumber);
+
+        try {
+          return await this.prisma.$transaction(async (tx) => {
+            const newOrder = await tx.order.create({
+              data: {
+                orderNumber,
+                userId,
+                addressId: data.addressId,
+                courier: data.courier,
+                courierCode: data.courierCode,
+                courierService: data.courierService,
+                courierServiceName: data.courierServiceName,
+                estimatedDelivery: data.estimatedDelivery || selectedShipping.etd,
+                weight: totalWeight,
+                paymentMethod: "XENDIT_INVOICE",
+                paymentStatus: "UNPAID",
+                xenditInvoiceId: invoice.id,
+                xenditInvoiceUrl: invoice.invoiceUrl,
+                xenditInvoiceStatus: String(invoice.status || "PENDING"),
+                subtotal,
+                shippingCost: data.shippingCost,
+                packagingFee: this.packagingFee,
+                adminFee: 0,
+                discount: 0,
+                total,
+                status: "PENDING",
+                notes: data.notes,
+                paymentDeadline: earliestDeadline, // ✅ NEW
+              },
+            });
+
+            // Create OrderItems (one per auction)
+            for (const auction of auctions) {
+              await tx.orderItem.create({
+                data: {
+                  orderId: newOrder.id,
+                  productId: auction.product.id,
+                  variantId: auction.variant.id,
+                  quantity: auction.quantity,
+                  price: auction.currentBid,
+                  subtotal: Number(auction.currentBid) * auction.quantity,
+                  sourceType: "AUCTION", // ✅ NEW
+                  sourceId: auction.id, // ✅ NEW
+                },
+              });
+            }
+
+            // Link auctions to order
+            await tx.auction.updateMany({
+              where: {
+                id: { in: data.auctionIds },
+              },
+              data: {
+                orderId: newOrder.id,
+              },
+            });
+
+            // Create status history
+            await tx.orderStatusHistory.create({
+              data: {
+                orderId: newOrder.id,
+                status: "PENDING",
+                notes: `Order created from ${auctions.length} auction(s)`,
+                createdBy: `user-${userId}`,
+              },
+            });
+
+            return newOrder;
+          });
+        } catch (error) {
+          if (this.isOrderNumberCollision(error) && attempt < 5) {
+            console.warn(
+              `⚠️ Order number collision (attempt ${attempt}); retrying...`
+            );
+            continue;
+          }
+          throw error;
+        }
       }
 
-      // Link auctions to order
-      await tx.auction.updateMany({
-        where: {
-          id: { in: data.auctionIds },
-        },
-        data: {
-          orderId: newOrder.id,
-        },
-      });
-
-      // Create status history
-      await tx.orderStatusHistory.create({
-        data: {
-          orderId: newOrder.id,
-          status: "PENDING",
-          notes: `Order created from ${auctions.length} auction(s)`,
-          createdBy: `user-${userId}`,
-        },
-      });
-
-      return newOrder;
-    });
+      throw new ApiError("Failed to generate unique order number", 500);
+    })();
 
     console.log("✅ Order created successfully:", order.orderNumber);
 
@@ -636,6 +740,8 @@ export class OrderService {
       orderNumber: order.orderNumber,
       status: order.status,
       paymentStatus: order.paymentStatus,
+      xenditInvoiceUrl: (order as any).xenditInvoiceUrl,
+      xenditInvoiceStatus: (order as any).xenditInvoiceStatus,
       paymentDeadline: order.paymentDeadline, // ✅ NEW
       total: Number(order.total),
       itemCount: order._count.orderItems,
@@ -718,6 +824,8 @@ export class OrderService {
       orderNumber: order.orderNumber,
       status: order.status,
       paymentStatus: order.paymentStatus,
+      xenditInvoiceUrl: (order as any).xenditInvoiceUrl,
+      xenditInvoiceStatus: (order as any).xenditInvoiceStatus,
       paymentDeadline: order.paymentDeadline,
       total: Number(order.total),
       itemCount: order._count.orderItems,
@@ -811,6 +919,8 @@ export class OrderService {
       orderNumber: order.orderNumber,
       status: order.status,
       paymentStatus: order.paymentStatus,
+      xenditInvoiceUrl: (order as any).xenditInvoiceUrl,
+      xenditInvoiceStatus: (order as any).xenditInvoiceStatus,
       paymentDeadline: order.paymentDeadline, // ✅ NEW
       subtotal: Number(order.subtotal),
       shippingCost: Number(order.shippingCost),
@@ -825,10 +935,6 @@ export class OrderService {
       estimatedDelivery: order.estimatedDelivery,
       weight: order.weight,
       paymentMethod: order.paymentMethod,
-      paymentProof: order.paymentProof,
-      bankName: order.bankName,
-      accountNumber: order.accountNumber,
-      accountName: order.accountName,
       address: {
         id: order.address.id,
         label: order.address.label,
@@ -844,7 +950,7 @@ export class OrderService {
         productId: item.productId,
         variantId: item.variantId,
         productName: item.product.name,
-        productSlug: item.product.slug,
+        productSlug: item.product.slug || 'product-not-found',
         productImage: item.product.thumbnail,
         productType: item.product.productType,
         variantInfo: {
@@ -875,97 +981,7 @@ export class OrderService {
     };
   };
 
-  /**
-   * Upload payment proof
-   */
-  uploadPaymentProof = async (
-    userId: number,
-    orderNumber: string,
-    data: UploadPaymentProofDto,
-    file: Express.Multer.File
-  ) => {
-    const order = await this.prisma.order.findFirst({
-      where: {
-        orderNumber,
-        userId,
-      },
-      include: {
-        user: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-          },
-        },
-      },
-    });
 
-    if (!order) {
-      throw new ApiError("Order not found", 404);
-    }
-
-    if (order.status !== "PENDING") {
-      throw new ApiError(
-        "Payment proof can only be uploaded for pending orders",
-        400
-      );
-    }
-
-    if (order.paymentProof) {
-      throw new ApiError("Payment proof already uploaded", 400);
-    }
-
-    console.log("📤 Uploading payment proof to Cloudinary...");
-    const uploadResult = await uploadPaymentProof(file);
-
-    const updatedOrder = await this.prisma.$transaction(async (tx) => {
-      const updated = await tx.order.update({
-        where: { id: order.id },
-        data: {
-          paymentProof: uploadResult.secure_url,
-          bankName: data.bankName,
-          accountNumber: data.accountNumber,
-          accountName: data.accountName,
-          status: "WAITING_FOR_CONFIRMATION",
-          paymentStatus: "PENDING_VERIFICATION",
-          paidAt: new Date(),
-        },
-      });
-
-      await tx.orderStatusHistory.create({
-        data: {
-          orderId: order.id,
-          status: "WAITING_FOR_CONFIRMATION",
-          notes: `Payment proof uploaded. Bank: ${data.bankName}`,
-          createdBy: `user-${userId}`,
-        },
-      });
-
-      return updated;
-    });
-
-    console.log("✅ Payment proof uploaded successfully");
-
-    try {
-      await this.emailService.sendPaymentUploadedToAdmin({
-        orderNumber: order.orderNumber,
-        customerName: order.user.name,
-        total: Number(order.total),
-        bankName: data.bankName,
-        accountNumber: data.accountNumber,
-        accountName: data.accountName,
-        paymentProof: uploadResult.secure_url,
-      });
-      console.log("✅ Payment notification email sent to admin");
-    } catch (emailError) {
-      console.error(
-        "❌ Failed to send payment notification email:",
-        emailError
-      );
-    }
-
-    return await this.getById(userId, orderNumber);
-  };
 
   /**
    * Cancel order (customer only - if status is PENDING) - UPDATED

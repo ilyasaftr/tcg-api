@@ -6,7 +6,6 @@ import { validateBody } from "../../middlewares/validate.middleware";
 import { CreateAuctionDto } from "./dto/create-auction.dto";
 import { UpdateAuctionDto } from "./dto/update-auction.dto"; // ✅ ADD: Import UpdateDto
 import { RelistAuctionDto } from "./dto/relist-auction.dto";
-import { BuyoutAuctionDto } from "./dto/buyout-auction.dto";
 
 export class AuctionRouter {
   router: Router;
@@ -94,7 +93,6 @@ export class AuctionRouter {
     this.router.post(
       "/:id/buyout",
       ...authChain,
-      validateBody(BuyoutAuctionDto),
       this.auctionController.buyOut
     );
 

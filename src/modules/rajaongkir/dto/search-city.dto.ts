@@ -1,9 +1,10 @@
-import { IsOptional, IsString } from "class-validator";
+import { IsInt, IsOptional, IsString, Min } from "class-validator";
 
 export class SearchCityDto {
   @IsOptional()
-  @IsString()
-  provinceId?: string; // Province name (e.g., "DKI Jakarta")
+  @IsInt()
+  @Min(1)
+  provinceId?: number;
 
   @IsOptional()
   @IsString()

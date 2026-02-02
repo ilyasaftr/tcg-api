@@ -23,13 +23,28 @@ export class BlogController {
       const rawPage = req.query.page;
       const rawLimit = req.query.limit ?? req.query.take;
       const rawSkip = req.query.skip;
+      const rawCategory = req.query.category;
+      const rawTag = req.query.tag;
+      const rawSearch = req.query.search;
 
       const hasPagination =
         rawPage !== undefined || rawLimit !== undefined || rawSkip !== undefined;
+      const hasFilters =
+        rawCategory !== undefined || rawTag !== undefined || rawSearch !== undefined;
 
       const page = rawPage !== undefined ? Number(rawPage) : undefined;
       const limit = rawLimit !== undefined ? Number(rawLimit) : undefined;
       const skip = rawSkip !== undefined ? Number(rawSkip) : undefined;
+      const category =
+        typeof rawCategory === "string" && rawCategory.trim()
+          ? rawCategory.trim()
+          : undefined;
+      const tag =
+        typeof rawTag === "string" && rawTag.trim() ? rawTag.trim() : undefined;
+      const search =
+        typeof rawSearch === "string" && rawSearch.trim()
+          ? rawSearch.trim()
+          : undefined;
 
       if (page !== undefined && (!Number.isFinite(page) || page < 1)) {
         throw new ApiError("Invalid `page` query param", 400);
@@ -44,11 +59,14 @@ export class BlogController {
         throw new ApiError("Invalid `skip` query param", 400);
       }
 
-      if (hasPagination) {
+      if (hasPagination || hasFilters) {
         const result = await this.blogService.getAllPostsPaginated(isAdmin, {
           page,
           limit,
           skip,
+          category,
+          tag,
+          search,
         });
 
         res.status(200).json({
@@ -59,7 +77,11 @@ export class BlogController {
         return;
       }
 
-      const posts = await this.blogService.getAllPosts(isAdmin);
+      const posts = await this.blogService.getAllPosts(isAdmin, {
+        category,
+        tag,
+        search,
+      });
 
       res.status(200).json({
         success: true,

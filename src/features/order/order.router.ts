@@ -1,9 +1,7 @@
 import { Router } from "express";
 import { OrderController } from "./order.controller";
 import { JwtMiddleware } from "../../middlewares/jwt.middleware";
-import { UploaderMiddleware } from "../../middlewares/uploader.middleware";
 import { CreateOrderDto } from "./dto/create-order.dto";
-import { UploadPaymentProofDto } from "./dto/upload-payment-proof.dto";
 import { CancelOrderDto } from "./dto/cancel-order.dto";
 import { validateBody } from "../../middlewares/validate.middleware";
 import { PreviewAuctionCheckoutDto } from "../../modules/auction/dto/preview-auction-checkout.dto";
@@ -13,13 +11,11 @@ export class OrderRouter {
   router: Router;
   orderController: OrderController;
   jwtMiddleware: JwtMiddleware;
-  uploaderMiddleware: UploaderMiddleware;
 
   constructor() {
     this.router = Router();
     this.orderController = new OrderController();
     this.jwtMiddleware = new JwtMiddleware();
-    this.uploaderMiddleware = new UploaderMiddleware();
     this.initializeRoutes();
   }
 
@@ -77,24 +73,6 @@ export class OrderRouter {
       "/:orderNumber",
       this.jwtMiddleware.verifyToken(jwtSecret),
       this.orderController.getById
-    );
-
-    /**
-     * POST /orders/:orderNumber/payment
-     * Upload payment proof
-     */
-    this.router.post(
-      "/:orderNumber/payment",
-      this.jwtMiddleware.verifyToken(jwtSecret),
-      this.uploaderMiddleware.upload().single("paymentProof"),
-      this.uploaderMiddleware.fileFilter([
-        "image/jpeg",
-        "image/jpg",
-        "image/png",
-        "image/webp",
-      ]),
-      validateBody(UploadPaymentProofDto),
-      this.orderController.uploadPaymentProof
     );
 
     /**

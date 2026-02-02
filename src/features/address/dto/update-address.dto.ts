@@ -31,6 +31,14 @@ export class UpdateAddressDto {
 
   @IsOptional()
   @IsString()
+  districtName?: string;
+
+  @IsOptional()
+  @IsString()
+  subdistrictName?: string;
+
+  @IsOptional()
+  @IsString()
   street?: string;
 
   @IsOptional()

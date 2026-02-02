@@ -1,8 +1,6 @@
 import { OrderStatus } from "../../generated/prisma";
 import { PrismaService } from "../../modules/prisma/prisma.service";
 import { ApiError } from "../../utils/api-error";
-import { ConfirmPaymentDTO } from "./dto/confirm-payment.dto";
-import { RejectPaymentDTO } from "./dto/reject-payment.dto";
 import { ShipOrderDTO } from "./dto/ship-order.dto";
 import { RevenueQueryDTO, RevenueGroupBy } from "./dto/revenue-query.dto";
 
@@ -190,131 +188,6 @@ export class AdminOrderService {
     };
   };
 
-  // ========================================
-  // GET WAITING CONFIRMATION ORDERS
-  // ========================================
-  getWaitingConfirmation = async () => {
-    const orders = await this.prisma.order.findMany({
-      where: {
-        status: "WAITING_FOR_CONFIRMATION",
-      },
-      include: {
-        user: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-          },
-        },
-      },
-      orderBy: {
-        paidAt: "asc",
-      },
-    });
-
-    return orders.map((order) => ({
-      id: order.id,
-      orderNumber: order.orderNumber,
-      customer: {
-        name: order.user.name,
-        email: order.user.email,
-      },
-      total: Number(order.total),
-      paymentProof: order.paymentProof,
-      bankName: order.bankName,
-      accountNumber: order.accountNumber,
-      accountName: order.accountName,
-      paidAt: order.paidAt?.toISOString(),
-    }));
-  };
-
-  // ========================================
-  // CONFIRM PAYMENT
-  // ========================================
-  confirmPayment = async (orderNumber: string, body: ConfirmPaymentDTO) => {
-    const order = await this.prisma.order.findUnique({
-      where: { orderNumber },
-    });
-
-    if (!order) {
-      throw new ApiError("Order not found", 404);
-    }
-
-    if (order.status !== "WAITING_FOR_CONFIRMATION") {
-      throw new ApiError("Order is not waiting for payment confirmation", 400);
-    }
-
-    const updatedOrder = await this.prisma.$transaction(async (tx) => {
-      const updated = await tx.order.update({
-        where: { orderNumber },
-        data: {
-          status: "CONFIRMED",
-          paymentStatus: "PAID",
-          confirmedAt: new Date(),
-          adminNotes: body.adminNotes,
-        },
-      });
-
-      await tx.orderStatusHistory.create({
-        data: {
-          orderId: order.id,
-          status: "CONFIRMED",
-          notes: `Payment confirmed by admin. ${body.adminNotes || ""}`,
-          createdBy: "admin",
-        },
-      });
-
-      return updated;
-    });
-
-    return updatedOrder;
-  };
-
-  // ========================================
-  // REJECT PAYMENT
-  // ========================================
-  rejectPayment = async (orderNumber: string, body: RejectPaymentDTO) => {
-    const order = await this.prisma.order.findUnique({
-      where: { orderNumber },
-    });
-
-    if (!order) {
-      throw new ApiError("Order not found", 404);
-    }
-
-    if (order.status !== "WAITING_FOR_CONFIRMATION") {
-      throw new ApiError("Order is not waiting for payment confirmation", 400);
-    }
-
-    const updatedOrder = await this.prisma.$transaction(async (tx) => {
-      const updated = await tx.order.update({
-        where: { orderNumber },
-        data: {
-          status: "PAYMENT_REJECTED",
-          paymentStatus: "FAILED",
-          paymentProof: null,
-          bankName: null,
-          accountNumber: null,
-          accountName: null,
-          paidAt: null,
-          adminNotes: body.reason,
-        },
-      });
-
-      await tx.orderStatusHistory.create({
-        data: {
-          orderId: order.id,
-          status: "PAYMENT_REJECTED",
-          notes: `Payment rejected by admin. Reason: ${body.reason}`,
-          createdBy: "admin",
-        },
-      });
-
-      return updated;
-    });
-
-    return updatedOrder;
-  };
 
   // ========================================
   // PROCESS ORDER
@@ -415,13 +288,11 @@ export class AdminOrderService {
     const orderCounts = {
       total: 0,
       pending: 0,
-      waitingConfirmation: 0,
       confirmed: 0,
       processing: 0,
       shipped: 0,
       completed: 0,
       cancelled: 0,
-      paymentRejected: 0,
     };
 
     statusCounts.forEach((item) => {
@@ -431,9 +302,6 @@ export class AdminOrderService {
       switch (item.status) {
         case "PENDING":
           orderCounts.pending = count;
-          break;
-        case "WAITING_FOR_CONFIRMATION":
-          orderCounts.waitingConfirmation = count;
           break;
         case "CONFIRMED":
           orderCounts.confirmed = count;
@@ -449,9 +317,6 @@ export class AdminOrderService {
           break;
         case "CANCELLED":
           orderCounts.cancelled = count;
-          break;
-        case "PAYMENT_REJECTED":
-          orderCounts.paymentRejected = count;
           break;
       }
     });
@@ -663,15 +528,15 @@ export class AdminOrderService {
       },
       previous: query.compareWithPrevious
         ? {
-            revenue: Math.round(previousRevenue),
-            orders: previousOrderCount,
-          }
+          revenue: Math.round(previousRevenue),
+          orders: previousOrderCount,
+        }
         : null,
       growth: query.compareWithPrevious
         ? {
-            percentage: Math.round(growthPercentage * 100) / 100,
-            absolute: Math.round(currentRevenue - previousRevenue),
-          }
+          percentage: Math.round(growthPercentage * 100) / 100,
+          absolute: Math.round(currentRevenue - previousRevenue),
+        }
         : null,
       breakdown: revenueBreakdown.length > 0 ? revenueBreakdown : null,
       topProducts,

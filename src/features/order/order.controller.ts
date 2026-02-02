@@ -156,59 +156,6 @@ export class OrderController {
   };
 
   /**
-   * POST /orders/:orderNumber/payment
-   * Upload payment proof
-   */
-  uploadPaymentProof = async (
-    req: Request,
-    res: Response,
-    next: NextFunction
-  ) => {
-    try {
-      const userId = this.getUserId(res);
-      const { orderNumber } = req.params;
-
-      if (!req.file) {
-        throw new ApiError("Payment proof file is required", 400);
-      }
-
-      const allowedTypes = [
-        "image/jpeg",
-        "image/jpg",
-        "image/png",
-        "image/webp",
-      ];
-      if (!allowedTypes.includes(req.file.mimetype)) {
-        throw new ApiError(
-          "Invalid file type. Only JPEG, JPG, PNG, and WEBP are allowed",
-          400
-        );
-      }
-
-      const maxSize = 5 * 1024 * 1024;
-      if (req.file.size > maxSize) {
-        throw new ApiError("File size exceeds 5MB limit", 400);
-      }
-
-      const order = await this.orderService.uploadPaymentProof(
-        userId,
-        orderNumber,
-        req.body,
-        req.file
-      );
-
-      res.status(200).json({
-        success: true,
-        message:
-          "Payment proof uploaded successfully. Waiting for admin confirmation",
-        data: order,
-      });
-    } catch (error) {
-      next(error);
-    }
-  };
-
-  /**
    * POST /orders/:orderNumber/cancel
    * Cancel order
    */

@@ -46,6 +46,25 @@ export class RajaOngkirRouter {
     this.router.get("/cities", this.rajaOngkirController.searchCities);
 
     /**
+     * GET /rajaongkir/districts
+     * Query params:
+     *   - cityId: required (number)
+     *   - query: optional
+     * Example:
+     *   /rajaongkir/districts?cityId=575
+     */
+    this.router.get("/districts", this.rajaOngkirController.searchDistricts);
+
+    /**
+     * GET /rajaongkir/subdistricts
+     * Query params:
+     *   - districtId: required (number)
+     * Example:
+     *   /rajaongkir/subdistricts?districtId=5823
+     */
+    this.router.get("/subdistricts", this.rajaOngkirController.searchSubdistricts);
+
+    /**
      * GET /rajaongkir/cities/:id
      * Get city by ID
      * Example: /rajaongkir/cities/17486

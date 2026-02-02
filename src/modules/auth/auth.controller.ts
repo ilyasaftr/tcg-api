@@ -1,16 +1,32 @@
 import { Request, Response } from "express";
 import { AuthService } from "./auth.service";
-import { OAuthUserData } from "./types/oauth.type";
+import { TurnstileService } from "./turnstile.service";
 
 export class AuthController {
   private authService: AuthService;
+  private turnstileService: TurnstileService;
 
   constructor() {
     this.authService = new AuthService();
+    this.turnstileService = new TurnstileService();
   }
+
+  private getClientIp = (req: Request) => {
+    const cfIp = req.headers["cf-connecting-ip"];
+    if (typeof cfIp === "string" && cfIp.trim()) return cfIp.trim();
+
+    const xff = req.headers["x-forwarded-for"];
+    if (typeof xff === "string" && xff.trim()) return xff.split(",")[0].trim();
+
+    return req.ip;
+  };
 
   register = async (req: Request, res: Response) => {
     try {
+      await this.turnstileService.verify({
+        token: (req.body as any).turnstileToken,
+        ip: this.getClientIp(req),
+      });
       const result = await this.authService.register(req.body);
       res.status(201).json(result);
     } catch (err: any) {
@@ -23,6 +39,10 @@ export class AuthController {
 
   login = async (req: Request, res: Response) => {
     try {
+      await this.turnstileService.verify({
+        token: (req.body as any).turnstileToken,
+        ip: this.getClientIp(req),
+      });
       const result = await this.authService.login(req.body);
       res.status(200).send(result);
     } catch (err: any) {
@@ -35,6 +55,10 @@ export class AuthController {
 
   forgotPassword = async (req: Request, res: Response) => {
     try {
+      await this.turnstileService.verify({
+        token: (req.body as any).turnstileToken,
+        ip: this.getClientIp(req),
+      });
       const result = await this.authService.forgotPassword(req.body);
       res.status(200).send(result);
     } catch (err: any) {
@@ -96,69 +120,6 @@ export class AuthController {
         success: false,
         message: err.message || "Something went wrong",
       });
-    }
-  };
-
-  googleCallback = async (req: Request, res: Response) => {
-    try {
-      const { user } = req as any;
-
-      if (!user) {
-        return res.redirect(
-          `${process.env.FRONTEND_URL}/login?error=oauth_failed`
-        );
-      }
-
-      const oauthData: OAuthUserData = {
-        email: user.email,
-        name: user.name,
-        provider: "GOOGLE",
-        providerId: user.id,
-        avatar: user.picture,
-      };
-
-      const result = await this.authService.loginWithOAuth(oauthData);
-
-      res.redirect(
-        `${process.env.FRONTEND_URL}/callback?token=${result.accessToken}`
-      );
-    } catch (error: any) {
-      console.error("Google OAuth error:", error);
-      res.redirect(`${process.env.FRONTEND_URL}/login?error=oauth_error`);
-    }
-  };
-
-  githubCallback = async (req: Request, res: Response) => {
-    try {
-      const { user } = req as any;
-
-      if (!user) {
-        console.log("No user found in GitHub callback");
-        return res.redirect(
-          `${process.env.FRONTEND_URL}/login?error=oauth_failed`
-        );
-      }
-
-      const oauthData: OAuthUserData = {
-        email: user.emails?.[0]?.value || user.email,
-        name: user.displayName || user.username || user.login,
-        provider: "GITHUB",
-        providerId: user.id.toString(),
-        avatar: user.photos?.[0]?.value || user.avatar_url,
-      };
-
-      console.log("GitHub OAuth data:", oauthData);
-
-      const result = await this.authService.loginWithOAuth(oauthData);
-
-      console.log("GitHub login result:", result);
-
-      res.redirect(
-        `${process.env.FRONTEND_URL}/callback?token=${result.accessToken}`
-      );
-    } catch (error: any) {
-      console.error("GitHub OAuth error:", error);
-      res.redirect(`${process.env.FRONTEND_URL}/login?error=oauth_error`);
     }
   };
 

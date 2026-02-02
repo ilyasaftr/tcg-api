@@ -9,7 +9,6 @@ import { RegisterDTO } from "./dto/register.dto";
 import { ResetPasswordDTO } from "./dto/reset-password.dto";
 import { ResendVerificationDTO } from "./dto/resend-verification.dto";
 import { UpdateEmailDTO } from "./dto/update-email.dto";
-import { OAuthUserData } from "./types/oauth.type";
 
 export class AuthService {
   private prisma: PrismaService;
@@ -121,9 +120,7 @@ export class AuthService {
       throw new ApiError("User not found", 404);
     }
 
-    if (!user.password) {
-      throw new ApiError("Please login with OAuth provider", 400);
-    }
+
 
     const payload = { id: user.id };
 
@@ -181,8 +178,6 @@ export class AuthService {
         role: true,
         isVerified: true,
         pictureProfile: true,
-        avatar: true,
-        provider: true,
         isActive: true,
         lastLogin: true,
         createdAt: true,
@@ -332,87 +327,7 @@ export class AuthService {
     return { message: "Verification email resent successfully" };
   };
 
-  loginWithOAuth = async (userData: OAuthUserData) => {
-    try {
-      let user = await this.prisma.user.findFirst({
-        where: { email: userData.email },
-      });
 
-      if (user) {
-        if (!user.provider || user.provider !== userData.provider) {
-          user = await this.prisma.user.update({
-            where: { id: user.id },
-            data: {
-              provider: userData.provider,
-              providerId: userData.providerId,
-              avatar: userData.avatar,
-              isVerified: true,
-              lastLogin: new Date(),
-            },
-          });
-        } else {
-          user = await this.prisma.user.update({
-            where: { id: user.id },
-            data: {
-              lastLogin: new Date(),
-            },
-          });
-        }
-      } else {
-        user = await this.prisma.user.create({
-          data: {
-            name: userData.name,
-            email: userData.email,
-            provider: userData.provider,
-            providerId: userData.providerId,
-            avatar: userData.avatar,
-            pictureProfile: userData.avatar,
-            isVerified: true,
-            isActive: true,
-            role: "USER",
-          },
-        });
-
-        try {
-          await this.mailService.sendMail(
-            userData.email,
-            "Welcome to TCG Store!",
-            "welcome",
-            {
-              name: userData.name,
-              year: new Date().getFullYear(),
-            }
-          );
-        } catch (emailError) {
-          console.error("Failed to send welcome email:", emailError);
-        }
-      }
-
-      if (!user) {
-        throw new ApiError("Failed to create or update user", 500);
-      }
-
-      if (!user.isActive) {
-        throw new ApiError("Your account has been deactivated", 400);
-      }
-
-      const payload = { id: user.id, role: user.role };
-      const accessToken = this.jwtService.generateToken(
-        payload,
-        process.env.JWT_SECRET!,
-        { expiresIn: "7d" }
-      );
-
-      const { password, ...userWithoutPassword } = user;
-      return { ...userWithoutPassword, accessToken };
-    } catch (error) {
-      console.error("OAuth login error:", error);
-      if (error instanceof ApiError) {
-        throw error;
-      }
-      throw new ApiError("OAuth login failed", 500);
-    }
-  };
 
   updateEmail = async (userId: number, body: UpdateEmailDTO) => {
     const user = await this.prisma.user.findFirst({

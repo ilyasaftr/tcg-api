@@ -77,6 +77,8 @@ export class AddressService {
         provinceName: data.provinceName,
         cityId: data.cityId,
         cityName: data.cityName,
+        districtName: data.districtName,
+        subdistrictName: data.subdistrictName,
         // Address Detail
         street: data.street,
         postalCode: data.postalCode,
@@ -127,6 +129,8 @@ export class AddressService {
       // Auto-update deprecated field
       updateData.city = data.cityName;
     }
+    if (data.districtName !== undefined) updateData.districtName = data.districtName;
+    if (data.subdistrictName !== undefined) updateData.subdistrictName = data.subdistrictName;
 
     // Address Detail
     if (data.street !== undefined) updateData.street = data.street;

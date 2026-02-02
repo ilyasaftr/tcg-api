@@ -59,7 +59,9 @@ export class RajaOngkirController {
   searchCities = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const filters = {
-        provinceId: req.query.provinceId as string | undefined,
+        provinceId: req.query.provinceId
+          ? parseInt(req.query.provinceId as string, 10)
+          : undefined,
         query: req.query.query as string | undefined,
       };
 
@@ -70,6 +72,71 @@ export class RajaOngkirController {
         message: "Cities retrieved successfully",
         count: cities.length,
         data: cities,
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  /**
+   * GET /rajaongkir/districts
+   * List/search districts by city ID
+   * Query params: cityId (required), query (optional)
+   */
+  searchDistricts = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const cityId = req.query.cityId
+        ? parseInt(req.query.cityId as string, 10)
+        : NaN;
+
+      if (Number.isNaN(cityId) || cityId <= 0) {
+        throw new ApiError("cityId is required", 400);
+      }
+
+      const query = (req.query.query as string | undefined) || undefined;
+      const districts = await this.rajaOngkirService.searchDistricts({
+        cityId,
+        query,
+      });
+
+      res.status(200).json({
+        success: true,
+        message: "Districts retrieved successfully",
+        count: districts.length,
+        data: districts,
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  /**
+   * GET /rajaongkir/subdistricts
+   * List sub-districts by district ID
+   * Query params: districtId (required)
+   */
+  searchSubdistricts = async (
+    req: Request,
+    res: Response,
+    next: NextFunction
+  ) => {
+    try {
+      const districtId = req.query.districtId
+        ? parseInt(req.query.districtId as string, 10)
+        : NaN;
+
+      if (Number.isNaN(districtId) || districtId <= 0) {
+        throw new ApiError("districtId is required", 400);
+      }
+
+      const subdistricts =
+        await this.rajaOngkirService.searchSubdistricts(districtId);
+
+      res.status(200).json({
+        success: true,
+        message: "Sub-districts retrieved successfully",
+        count: subdistricts.length,
+        data: subdistricts,
       });
     } catch (error) {
       next(error);
