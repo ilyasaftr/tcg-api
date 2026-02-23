@@ -14,9 +14,13 @@ export class CardSetService {
     this.cloudinary = new CloudinaryService();
   }
 
-  // ⭐ EXISTING: Get all sets with optional language filter
-  getAll = async (filters?: { languageId?: number }) => {
+  // ⭐ EXISTING: Get all sets with optional game/language filters
+  getAll = async (filters?: { gameId?: number; languageId?: number }) => {
     const where: any = { isActive: true };
+
+    if (filters?.gameId) {
+      where.gameId = filters.gameId;
+    }
 
     if (filters?.languageId) {
       where.languageId = filters.languageId;

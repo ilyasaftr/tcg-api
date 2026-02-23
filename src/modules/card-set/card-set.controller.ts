@@ -9,7 +9,7 @@ export class CardSetController {
     this.cardSetService = new CardSetService();
   }
 
-  // ⭐ EXISTING: Get all sets (with optional language filter)
+  // ⭐ EXISTING: Get all sets (with optional game/language filters)
   getAll = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const rawPage = req.query.page;
